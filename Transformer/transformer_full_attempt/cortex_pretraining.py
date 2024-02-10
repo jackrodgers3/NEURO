@@ -26,10 +26,10 @@ parser.add_argument('--batch_size', help='batch size', type=int)
 parser.add_argument('--rep', help='reproducibility', type=bool)
 parser.add_argument('--mi', help='maximum iterations', type=int)
 
-parser.set_defaults(src_vocab_size = 1719, tgt_vocab_size = 1719, d_model = 256,
-                    num_heads = 8, num_layers = 4, max_seq_length = 10, dropout=0.1,
+parser.set_defaults(src_vocab_size = 1719, tgt_vocab_size = 1719, d_model = 128,
+                    num_heads = 8, num_layers = 3, max_seq_length = 32, dropout=0.1,
                     lr=3e-4, loss_function=3, label_smoothing=0.1,
-                    batch_size=4, rep=True, mi=1000)
+                    batch_size=10, rep=True, mi=1000)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -64,6 +64,12 @@ class SeminalOpt:
         d_model = self.model_size
         step, warmup = self.steps, self.warmup
         return (d_model ** -0.5) * min(step ** (-0.5), step * warmup ** (-1.5))
+
+    def get_cur_lr(self):
+        clr = None
+        for p in self.optimizer.param_groups:
+            clr = p['lr']
+        return clr
 
     def update_learning_rate(self):
         self.steps += 1
@@ -108,9 +114,21 @@ def train(args):
         criterion = nn.MSELoss(reduction='mean')
     elif args.loss_function == 3:
         criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    wandb.init(
+        project='NEURO_TRANSFORMER_RECONSTRUCTION',
+        config={
+            'block_size': args.batch_size,
+            'num_layers': args.num_layers,
+            'max_iters': args.mi,
+            'label_smoothing': args.label_smoothing,
+            'd_model': args.d_model,
+            'dropout': args.dropout
+        }
+    )
     print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98), eps=1e-9)
     sched = SeminalOpt(args.d_model, 1.0, optimizer, warmup=5000)
+    wandb.watch(model, criterion=F.cross_entropy, log='all', log_freq=10, log_graph=True)
     model.train()
     for iter in tqdm(range(args.mi)):
         sched.zero_grad()
@@ -120,10 +138,13 @@ def train(args):
         output = model(xb, yb[:, :-1])
 
         loss = criterion(output.contiguous().view(-1, args.tgt_vocab_size), yb[:, 1:].contiguous().view(-1))
+        wandb.log({'loss': loss.item(), 'cur_lr': sched.get_cur_lr()})
         if iter % 100 == 0 and iter != 0:
             print(loss.item())
         loss.backward()
         sched.step_and_update()
+
+    wandb.finish()
 
 
 if __name__ == '__main__':
