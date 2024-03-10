@@ -7,6 +7,7 @@ import pickle
 ###HYPERPARAMETERS + GLOBAL DATA######
 BASE_DIR = r'C:\Users\jackm\PycharmProjects\Neuro_Hackathon_2023/Data/'
 BASE_DIR2 = r'C:\Users\jackm\PycharmProjects\Neuro_Hackathon_2023/Transformer/'
+D_DRIVE = r'D:\Data\Research\NEURO\touch/'
 path = BASE_DIR + 'Animal2_Touch'
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -53,13 +54,17 @@ inputs = torch.from_numpy(np.array(inputs)).type(torch.FloatTensor)
 targets = torch.from_numpy(np.array(targets)).type(torch.FloatTensor)
 print(f'Neuron signals from each frame shape: {inputs.shape}')
 print(f'Limb moved in each frame shape: {targets.shape}')
-with open(BASE_DIR2 + 'inputs2_pickle', 'wb') as f:
-    pickle.dump(inputs, f)
+DATA = []
+DATA.append(inputs)
+DATA.append(targets)
+with open(D_DRIVE + 'neuron_to_limb2.pkl', 'wb') as f:
+    pickle.dump(DATA, f)
 f.close()
-with open(BASE_DIR2 + 'targets2_pickle', 'wb') as g:
-    pickle.dump(targets, g)
-g.close()
+
 print(type(inputs[0][0].item()))
+
+
+
 
 def process_data(base_dir):
     subfolders = os.listdir(base_dir)
@@ -91,6 +96,7 @@ def process_data(base_dir):
     print(f'Neuron signals from each frame shape: {len(inputs)}')
     print(f'Limb moved in each frame shape: {len(targets)}')
     return inputs, targets
+
 
 
 

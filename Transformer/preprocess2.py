@@ -3,21 +3,26 @@ import numpy as np
 import sys
 import os
 import matplotlib.pyplot as plt
+D_DRIVE = r'D:\Data\Research\NEURO\touch/'
 import pickle
 base_dir = r"C:\Users\jackm\PycharmProjects\Neuro_Hackathon_2023\Transformer/"
 #make delta dataset
 
-with open(base_dir + "inputs_pickle", "rb") as f:
-    inputs = pickle.load(f)
+with open(D_DRIVE + "neuron_to_limb2.pkl", "rb") as f:
+    data = pickle.load(f)
 f.close()
+inputs, outputs = data
 print(inputs.shape)
-sys.exit()
+inp_l = len(inputs)
 
-delta_tensor = torch.empty(size=(45358, 901))
-for i in range(35357):
+
+delta_tensor = torch.empty(size=(inp_l-1, 901))
+for i in range(inp_l-1):
     delta_tensor[i] = inputs[i+1] - inputs[i]
-
-
-with open(base_dir + "delta_inputs2_pickle", "wb") as g:
-    pickle.dump(delta_tensor, g)
+outputs = outputs[1:]
+NEWDATA = [delta_tensor, outputs]
+print(delta_tensor.shape)
+print(outputs.shape)
+with open(D_DRIVE + "dneuron_to_limb2.pkl", "wb") as g:
+    pickle.dump(NEWDATA, g)
 g.close()

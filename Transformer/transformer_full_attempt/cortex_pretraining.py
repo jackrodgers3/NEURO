@@ -11,30 +11,34 @@ import pickle
 from tqdm import tqdm
 from torch.utils.data import Dataset
 
-parser = argparse.ArgumentParser(description='Cortex PreTraining Arguments')
-parser.add_argument('--src_vocab_size', help='n/a', type=int)
-parser.add_argument('--tgt_vocab_size', help='n/a', type=int)
-parser.add_argument('--d_model', help='model embedding dimension', type=int)
-parser.add_argument('--num_heads', help='number of attention heads', type=int)
-parser.add_argument('--num_layers', help='number of layers for enc/dec', type=int)
-parser.add_argument('--max_seq_length', help='sequence length', type=int)
-parser.add_argument('--dropout', help='dropout rate', type=float)
-parser.add_argument('--lr', help='learning rate', type=float)
-parser.add_argument('--loss_function', help='loss function', type=int)
-parser.add_argument('--label_smoothing', help='label smoothing', type=float)
-parser.add_argument('--batch_size', help='batch size', type=int)
-parser.add_argument('--rep', help='reproducibility', type=bool)
-parser.add_argument('--mi', help='maximum iterations', type=int)
 
-parser.set_defaults(src_vocab_size = 1719, tgt_vocab_size = 1719, d_model = 128,
-                    num_heads = 8, num_layers = 3, max_seq_length = 32, dropout=0.1,
-                    lr=3e-4, loss_function=3, label_smoothing=0.1,
-                    batch_size=10, rep=True, mi=1000)
+def get_args():
+    parser = argparse.ArgumentParser(description='Cortex PreTraining Arguments')
+    parser.add_argument('--src_vocab_size', help='n/a', type=int)
+    parser.add_argument('--tgt_vocab_size', help='n/a', type=int)
+    parser.add_argument('--d_model', help='model embedding dimension', type=int)
+    parser.add_argument('--num_heads', help='number of attention heads', type=int)
+    parser.add_argument('--num_layers', help='number of layers for enc/dec', type=int)
+    parser.add_argument('--max_seq_length', help='sequence length', type=int)
+    parser.add_argument('--dropout', help='dropout rate', type=float)
+    parser.add_argument('--lr', help='learning rate', type=float)
+    parser.add_argument('--loss_function', help='loss function', type=int)
+    parser.add_argument('--label_smoothing', help='label smoothing', type=float)
+    parser.add_argument('--batch_size', help='batch size', type=int)
+    parser.add_argument('--rep', help='reproducibility', type=bool)
+    parser.add_argument('--mi', help='maximum iterations', type=int)
+
+    parser.set_defaults(src_vocab_size = 1719, tgt_vocab_size = 1719, d_model = 128,
+                        num_heads = 8, num_layers = 1, max_seq_length = 32, dropout=0.0,
+                        lr=3e-4, loss_function=3, label_smoothing=0.0,
+                        batch_size=10, rep=True, mi=1000)
+    return parser.parse_args()
+
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-class CustomNeuralDataset:
+class CustomNeuralDataset(Dataset):
     def __init__(self, data):
         self.data = data
 
@@ -99,9 +103,10 @@ def get_batch(raw_data, args):
 def train(args):
     if args.rep:
         torch.manual_seed(23)
-    with open(r'C:\Users\jackm\PycharmProjects\Neuro_Hackathon_2023\Transformer\inputs_pickle', 'rb') as f:
-        raw_data = pickle.load(f)
+    with open(r"D:\Data\Research\NEURO\touch\neuron_to_limb1_1h.pkl", 'rb') as f:
+        full_data = pickle.load(f)
     f.close()
+    raw_data = full_data[0]
     num_neurons = 1719
     args.src_vocab_size = num_neurons
     args.tgt_vocab_size = num_neurons
@@ -127,17 +132,19 @@ def train(args):
     )
     print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98), eps=1e-9)
-    sched = SeminalOpt(args.d_model, 1.0, optimizer, warmup=5000)
-    wandb.watch(model, criterion=F.cross_entropy, log='all', log_freq=10, log_graph=True)
+    sched = SeminalOpt(args.d_model, 1.0, optimizer, warmup=4000)
     model.train()
     for iter in tqdm(range(args.mi)):
         sched.zero_grad()
         xb, yb = get_batch(raw_data, args)
+        print(xb.shape, yb.shape)
+        print(yb[:, :].shape)
         xb = xb.type(torch.LongTensor)
         yb = yb.type(torch.LongTensor)
-        output = model(xb, yb[:, :-1])
+        output = model(xb, yb[:, :])
+        print(output.shape)
 
-        loss = criterion(output.contiguous().view(-1, args.tgt_vocab_size), yb[:, 1:].contiguous().view(-1))
+        loss = criterion(output.contiguous().view(-1, args.tgt_vocab_size), yb[:, :].contiguous().view(-1))
         wandb.log({'loss': loss.item(), 'cur_lr': sched.get_cur_lr()})
         if iter % 100 == 0 and iter != 0:
             print(loss.item())
@@ -148,6 +155,6 @@ def train(args):
 
 
 if __name__ == '__main__':
-    args = parser.parse_args()
+    args = get_args()
     train(args)
 

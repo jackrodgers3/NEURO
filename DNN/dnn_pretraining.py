@@ -1,4 +1,6 @@
 import argparse
+import random
+import sys
 import torch
 import numpy as np
 import torch.nn as nn
@@ -20,16 +22,14 @@ parser.add_argument('--lparam', type=float)
 parser.add_argument('--dropout', type=float)
 parser.add_argument('--lr', type=float)
 parser.add_argument('--bias', type=bool)
-parser.add_argument('--base_dir', type = str)
-parser.add_argument('--weighted', type=bool)
-parser.add_argument('--tvt_split', type=tuple)
 parser.add_argument('--label_smothing', type=float)
 parser.add_argument('--batch_size', type=int)
 parser.add_argument('--n_epochs', type=int)
-parser.set_defaults(num_layers=4, width = 1024, lparam=0.01, dropout=0.25,
-                    lr=3e-4, bias=True, base_dir=r'C:\Users\jackm\PycharmProjects\NEURO/',
-                    weighted = True, tvt_split = (0.7, 0.1, 0.2),
-                    label_smoothing = 0.05, batch_size=64, n_epochs=20)
+parser.add_argument('--base_dir', type=str)
+parser.set_defaults(num_layers=3, width = 1024, lparam=0.01, dropout=0.3,
+                    lr=1e-4, bias=True,
+                    label_smoothing = 0.05, batch_size=32, n_epochs=50,
+                    base_dir = r'C:\Users\jackm\PycharmProjects\NEURO\Transformer/')
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -53,9 +53,9 @@ def split_data(full_dataset, tvt_tuple):
     return train_data, valid_data, test_data
 
 
-class GenericDNN(nn.Module):
+class GenericResidualDNN(nn.Module):
     def __init__(self, linear_stack, multiclass=True):
-        super(GenericDNN, self).__init__()
+        super(GenericResidualDNN, self).__init__()
         self.linear_stack = linear_stack
         self.multiclass = multiclass
 
@@ -97,7 +97,7 @@ def define_resdnn(num_layers, width, num_inputs, lparam, dropout, num_outputs, m
 
     stack = nn.Sequential(*layers)
 
-    model = GenericDNN(stack, multiclass)
+    model = GenericResidualDNN(stack, multiclass)
 
     return model
 
@@ -107,40 +107,32 @@ def pretraining(args):
     with open(args.base_dir + 'inputs_pickle', 'rb') as f:
         INPUTS = pickle.load(f)
     f.close()
-
     with open(args.base_dir + 'targets_pickle', 'rb') as g:
         TARGETS = pickle.load(g)
     g.close()
-    TARGETS = TARGETS[1:]
-    num_neurons = 1719
-    print(TARGETS.shape)
-    TARGETSOH = torch.empty(size=(47978, 5))
-
-    for i in range(len(TARGETS)):
-        newrow = [0.0, 0.0, 0.0, 0.0, 0.0]
-        newrow[int(TARGETS[i].item())] = 1.0
-
-        TARGETSOH[i] = torch.tensor(data=newrow, dtype=torch.float)
     DATA.append(INPUTS)
-    DATA.append(TARGETSOH)
-    train_data, valid_data, test_data = split_data(DATA, args.tvt_split)
-    train_dataset, valid_dataset, test_dataset = CustomNeuralData(train_data), \
-        CustomNeuralData(valid_data), CustomNeuralData(test_data)
-    if args.weighted:
-        # getting class counts
-        class_counts = [0.0, 0.0, 0.0, 0.0, 0.0]
-        for i in range(len(TARGETS)):
-            class_counts[int(TARGETS[i].item())] += 1.0
-        class_weights = [1.0/class_counts[i] for i in range(len(class_counts))]
-        sampler = WeightedRandomSampler(weights=class_weights, num_samples=train_dataset.__len__(), replacement=True)
-        train_dataloader = DataLoader(train_dataset, sampler=sampler, batch_size=args.batch_size)
-    else:
-        train_dataloader = DataLoader(train_dataset, args.batch_size, shuffle=True, pin_memory=True)
-    valid_dataloader = DataLoader(valid_dataset, args.batch_size, shuffle=True, pin_memory=True)
+    DATA.append(TARGETS)
+    make_balanced_data(DATA, 5, 500)
+    with open(r'C:\Users\jackm\PycharmProjects\NEURO\DNN\dnn_data.pkl', 'rb') as f:
+        train_data = pickle.load(f)
+    f.close()
+    TARGETS1H = torch.empty(size=(len(TARGETS), 5), dtype=torch.float)
+    for i in range(len(TARGETS)):
+        newrow = [0.0 for j in range(5)]
+        newrow[int(TARGETS[i].item())] = 1.0
+        TARGETS1H[i] = torch.tensor(newrow, dtype=torch.float)
+    print(f'1h shape: {TARGETS1H.shape}')
+    test_data = [INPUTS, TARGETS1H]
+    train_dataset = CustomNeuralData(train_data)
+    test_dataset = CustomNeuralData(test_data)
+    train_dataloader = DataLoader(train_dataset, args.batch_size, shuffle=True, pin_memory=True)
     test_dataloader = DataLoader(test_dataset, args.batch_size, shuffle=True, pin_memory=True)
+    ex_input, ex_output = train_dataset.__getitem__(0)
+    num_neurons, num_targets = ex_input.shape[0], ex_output.shape[0]
+    print(f'Input shape: {num_neurons}\nOutput shape: {num_targets}')
     print("Dataloaders DONE")
     model = define_resdnn(args.num_layers, args.width, num_neurons, args.lparam,
-                          args.dropout, 5, multiclass=True, bias=True)
+                          args.dropout, num_targets, multiclass=True, bias=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     wandb.init(
@@ -151,8 +143,7 @@ def pretraining(args):
             "num_layers": args.num_layers,
             "width": args.width,
             "dropout": args.dropout,
-            "lparam": args.lparam,
-            "weighted": args.weighted
+            "lparam": args.lparam
         }
     )
 
@@ -173,34 +164,27 @@ def pretraining(args):
             loss.backward()
 
             optimizer.step()
-
         model.eval()
-        for j, (x_valid, y_valid) in tqdm(enumerate(valid_dataloader)):
-            x_valid, y_valid = x_valid.to(device), y_valid.to(device)
-
-            y_pred_valid = model(x_valid)
-
-            valid_loss = criterion(y_pred_valid, y_valid)
-
-            if j % 2 == 0:
-                wandb.log({"valid_loss": valid_loss.mean()})
-
-            if valid_loss.mean() < best_valid_loss:
-                best_valid_loss = valid_loss.mean()
-                torch.save(model.state_dict(), f"Transformer/saved_models/ntldnn.pt")
-    model = define_resdnn(args.num_layers, args.width, num_neurons, args.lparam,
-                          args.dropout, 5, multiclass=True, bias=True)
-    model = model.to(device)
-    model.load_state_dict(torch.load(f"Transformer/saved_models/ntldnn.pt"))
+        with torch.no_grad():
+            for j, (x_test, y_test) in tqdm(enumerate(test_dataloader)):
+                x_test, y_test = x_test.to(device), y_test.to(device)
+                y_pred_test = model(x_test)
+                test_loss = criterion(y_pred_test, y_test)
+                if j % 2 == 0:
+                    wandb.log({"valid_loss": test_loss.mean()})
+                if test_loss.mean() < best_valid_loss:
+                    best_valid_loss = test_loss.mean()
+    # plot confusion matrix
     model.eval()
-    with torch.no_grad():
-        for k, (x_test, y_test) in tqdm(enumerate(test_dataloader)):
-            x_test = x_test.to(device)
-            y_test = y_test.to(device)
-            y_pred_test = model(x_test)
-            test_loss = criterion(y_pred_test, y_test)
-            wandb.log({"test_loss": test_loss.mean()})
+    val_predictions = model(test_data[0])
+    top_pred_ids = val_predictions.argmax(axis=1).tolist()
+    ground_truth_ids = test_data[1].argmax(axis=1).tolist()
+    wandb.log({'confusion_matrix': wandb.plot.confusion_matrix(
+        preds=top_pred_ids, y_true=ground_truth_ids,
+        class_names = [0, 1, 2, 3, 4]
+    )})
     wandb.finish()
+    return best_valid_loss
 
 
 def interpret_multiclass_results(args):
@@ -241,7 +225,7 @@ def interpret_multiclass_results(args):
     model = define_resdnn(args.num_layers, args.width, num_neurons, args.lparam,
                           args.dropout, 5, multiclass=True, bias=True)
     model = model.to(device)
-    model.load_state_dict(torch.load(f"Transformer/saved_models/ntldnn.pt"))
+    model.load_state_dict(torch.load(f"../Transformer/saved_models/ntldnn.pt"))
     model.eval()
     with torch.no_grad():
         for k, (x_test, y_test) in tqdm(enumerate(test_dataloader)):
@@ -259,6 +243,49 @@ def interpret_multiclass_results(args):
     plt.show()
 
 
+def make_balanced_data(raw_data, num_classes, min_counts):
+    print(raw_data[0].shape)
+    print(raw_data[1].shape)
+    # get class counts and sort
+    class_counts = [0 for b in range(num_classes)]
+    class_indices = [[] for b in range(num_classes)]
+    for i in range(len(raw_data[1])):
+        class_counts[int(raw_data[1][i].item())] += 1
+        class_indices[int(raw_data[1][i].item())].append(i)
+    print(class_counts)
+    min_count = min_counts
+    # create master indices list
+    master_indices = []
+    for i in range(len(class_indices)):
+        for j in range(min_count):
+            master_indices.append(class_indices[i][j])
+    # shuffle indices
+    random.shuffle(master_indices)
+    # create input and output data
+    input_data = []
+    output_data = []
+    for i in range(len(master_indices)):
+        ex_i = raw_data[0][master_indices[i]].tolist()
+        ex_o = raw_data[1][master_indices[i]].tolist()
+        input_data.append(ex_i)
+        output_data.append(ex_o)
+    # one hot encode outputs
+    output_1h_data = []
+    for i in range(len(output_data)):
+        newrow = [0 for j in range(num_classes)]
+        newrow[int(output_data[i])] = 1
+        output_1h_data.append(newrow)
+    inputs = torch.tensor(input_data, dtype=torch.float)
+    outputs = torch.tensor(output_1h_data, dtype=torch.float)
+    print(f'Input shape: {inputs.shape}\nOutput shape: {outputs.shape}')
+    DATA = []
+    DATA.append(inputs)
+    DATA.append(outputs)
+    with open(r'C:\Users\jackm\PycharmProjects\NEURO\DNN\dnn_data.pkl', 'wb') as f:
+        pickle.dump(DATA, f)
+    f.close()
+
+
 if __name__ == '__main__':
     args = parser.parse_args()
-    interpret_multiclass_results(args)
+    pretraining(args)
