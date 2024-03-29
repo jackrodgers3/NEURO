@@ -135,6 +135,7 @@ def train(args):
     sched = SeminalOpt(args.d_model, 1.0, optimizer, warmup=4000)
     model.train()
     for iter in tqdm(range(args.mi)):
+        model.train()
         sched.zero_grad()
         xb, yb = get_batch(raw_data, args)
         print(xb.shape, yb.shape)
